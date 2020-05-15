@@ -1,4 +1,4 @@
-#include "../fnv.h"
+﻿#include "../fnv.h"
 #include "Visuals.h"
 
 #include "../SDK/ConVar.h"
@@ -12,6 +12,8 @@
 #include "../SDK/RenderContext.h"
 #include "../SDK/Surface.h"
 #include "../SDK/ModelInfo.h"
+#include "../SDK/Vector.h"
+#include "../SDK/Beams.h"
 
 #include <array>
 
@@ -117,9 +119,9 @@ void Visuals::modifySmoke() noexcept
     }
 }
 
-void Visuals::thirdperson() noexcept
+void Visuals::thirdperson(FrameStage stage, Vector angle) noexcept
 {
-    static bool isInThirdperson{ true };
+    static bool isInThirdperson{ false };
     static float lastTime{ 0.0f };
 
     if (GetAsyncKeyState(config->visuals.thirdpersonKey) && memory->globalVars->realtime - lastTime > 0.5f) {
@@ -128,9 +130,14 @@ void Visuals::thirdperson() noexcept
     }
 
     if (config->visuals.thirdperson)
-        if (memory->input->isCameraInThirdPerson = (!config->visuals.thirdpersonKey || isInThirdperson)
-            && localPlayer && localPlayer->isAlive())
+        if (memory->input->isCameraInThirdPerson = (!config->visuals.thirdpersonKey || isInThirdperson) && localPlayer && localPlayer->isAlive())
+        {
             memory->input->cameraOffset.z = static_cast<float>(config->visuals.thirdpersonDistance);
+            if (config->globals.thirdPersonAnglesSet && stage == FrameStage::RENDER_START)
+            {
+                *(Vector*)((uintptr_t)(localPlayer.get()) + 0x31D8) = angle;
+            }
+        }
 }
 
 void Visuals::removeVisualRecoil(FrameStage stage) noexcept
@@ -365,4 +372,178 @@ void Visuals::skybox() noexcept
         static const auto sv_skyname = interfaces->cvar->findVar("sv_skyname");
         memory->loadSky(sv_skyname->string);
     }
+}
+
+int GetBlendedColor(int percentage)
+{
+    if (percentage < 50)
+        return std::round(percentage * 2.55);
+    else
+        return 255;
+}
+
+void Visuals::indicators() noexcept
+{
+    if (config->visuals.indicatorsEnabled && interfaces->engine->isConnected() && interfaces->engine->isInGame())
+    {
+        if (localPlayer->isAlive())
+        {
+            const auto [width, height] = interfaces->surface->getScreenSize();
+
+            const auto x = width / 2;
+            const auto y = height / 2;
+
+            const int bottomLeft[2] = {
+                x - x,
+                y + y
+            };
+            const int upperLeft[2] = { // not actually needed, but left it here if anyone needs this code
+                x - x,
+                y - y
+            };
+            const int bottomRight[2] = { // not actually needed, but left it here if anyone needs this code
+                x + x,
+                y + y
+            };
+            const int upperRight[2] = { // not actually needed, but left it here if anyone needs this code
+                x + width,
+                y - height
+            };
+            const int screenSizeMultiplier[2] = {
+                2560 / width,
+                1440 / height
+            };
+
+            int desyncHeight = 0;
+            int fakeLagHeight = 0;
+            int LBYHeight = 0;
+            int FDHeight = 0;
+
+            float desyncAmount = 0;
+            float lbyDifference = 0;
+
+            if (config->antiAim.yawReal && config->antiAim.enabled)
+                desyncAmount = localPlayer->getMaxDesyncAngle() * config->antiAim.bodyLean / 100;
+
+            int desyncGreenPercentage = ((3.4483 * desyncAmount) * -1) / 2;
+            int desyncRedPercentage = 100 - desyncGreenPercentage;
+
+            float lby = localPlayer->lby();
+
+            if (config->visuals.selectedIndicators[0])
+            {
+                LBYHeight += 25;
+                fakeLagHeight += 25;
+                FDHeight += 25;
+            }
+            if (config->visuals.selectedIndicators[1])
+            {
+
+                fakeLagHeight += 25;
+                FDHeight += 25;
+            }
+            if (config->visuals.selectedIndicators[2])
+            {
+                FDHeight += 25;
+            }
+
+            desyncAmount = std::round(desyncAmount) / 2;
+            lbyDifference = std::round(lbyDifference) / 2;
+
+            std::wstring desyncIndicator;
+            desyncIndicator = desyncIndicator + L"FAKE";
+
+            std::wstring LBYIndicator;
+            LBYIndicator = LBYIndicator + L"LBY";
+
+            std::wstring fakelagIndicator;
+            fakelagIndicator = fakelagIndicator + L"Choked: " + std::to_wstring(config->globals.chokedPackets);
+
+            std::wstring fakeduckIndicator;
+            fakeduckIndicator = fakeduckIndicator + L"FD";
+
+            if (config->visuals.selectedIndicators[0])
+            {
+                interfaces->surface->setTextFont(18); // desync indicator
+                interfaces->surface->setTextPosition(bottomLeft[0], bottomLeft[1] - (screenSizeMultiplier[1] * 75) - desyncHeight);
+                interfaces->surface->setTextColor(GetBlendedColor(desyncRedPercentage), GetBlendedColor(desyncGreenPercentage), 0, 255);
+                interfaces->surface->printText(desyncIndicator);
+            }
+
+            if (config->visuals.selectedIndicators[1])
+            {
+                interfaces->surface->setTextFont(18); // LBY indicator
+                interfaces->surface->setTextPosition(bottomLeft[0], bottomLeft[1] - (screenSizeMultiplier[1] * 75) - LBYHeight);
+                if (lby != config->globals.realAngle)
+                    interfaces->surface->setTextColor(0, 255, 0, 255);
+                else
+                    interfaces->surface->setTextColor(255, 0, 0, 255);
+                interfaces->surface->printText(LBYIndicator);
+            }
+
+            if (config->visuals.selectedIndicators[2])
+            {
+                interfaces->surface->setTextFont(18); // fakelag indicator
+                interfaces->surface->setTextPosition(bottomLeft[0], bottomLeft[1] - (screenSizeMultiplier[1] * 75) - fakeLagHeight);
+                interfaces->surface->setTextColor(0, 255, 0, 255);
+                interfaces->surface->printText(fakelagIndicator);
+            }
+
+            if (config->visuals.selectedIndicators[3])
+            {
+                interfaces->surface->setTextFont(18); // fakeduck indicator
+                interfaces->surface->setTextPosition(bottomLeft[0], bottomLeft[1] - (screenSizeMultiplier[1] * 75) - FDHeight);
+                if (config->misc.fakeDucking)
+                    interfaces->surface->setTextColor(0, 255, 0, 255);
+                else
+                    interfaces->surface->setTextColor(255, 0, 0, 255);
+                interfaces->surface->printText(fakeduckIndicator);
+            }
+        }
+    }
+}
+
+void Visuals::bulletBeams(GameEvent* event) noexcept
+{
+    if (!config->visuals.bulletTracers.enabled || !interfaces->engine->isInGame() || !interfaces->engine->isConnected())
+        return;
+
+    const auto player = interfaces->entityList->getEntity(interfaces->engine->getPlayerForUserID(event->getInt("userid")));
+
+    if (!player || !localPlayer)
+        return;
+
+    Vector position;
+    position.x = event->getFloat("x");
+    position.y = event->getFloat("y");
+    position.z = event->getFloat("z");
+
+    BeamInfo_t beam_info;
+    beam_info.m_nType = TE_BEAMPOINTS;
+    beam_info.m_pszModelName = "sprites/physbeam.vmt";
+    beam_info.m_nModelIndex = -1;
+    beam_info.m_flHaloScale = 0.f;
+    beam_info.m_flLife = 4.f;
+    beam_info.m_flWidth = 1.f;
+    beam_info.m_flEndWidth = 1.f;
+    beam_info.m_flFadeLength = 0.1f;
+    beam_info.m_flAmplitude = 2.f;
+    beam_info.m_flBrightness = 255.f;
+    beam_info.m_flSpeed = 0.2f;
+    beam_info.m_nStartFrame = 0;
+    beam_info.m_flFrameRate = 0.f;
+    beam_info.m_flRed = config->visuals.bulletTracers.color[0] * 255;
+    beam_info.m_flGreen = config->visuals.bulletTracers.color[1] * 255;
+    beam_info.m_flBlue = config->visuals.bulletTracers.color[2] * 255;
+    beam_info.m_nSegments = 2;
+    beam_info.m_bRenderable = true;
+    beam_info.m_nFlags = FBEAM_ONLYNOISEONCE | FBEAM_NOTILE | FBEAM_HALOBEAM;
+
+    // create beam backwards because it looks nicer.
+    beam_info.m_vecStart = position;
+    beam_info.m_vecEnd = player->getEyePosition();
+
+    auto beam = memory->renderBeams->CreateBeamPoints(beam_info);
+    if (beam)
+        memory->renderBeams->DrawBeam(beam);
 }

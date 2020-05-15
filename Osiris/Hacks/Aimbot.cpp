@@ -2,7 +2,6 @@
 #include "../Config.h"
 #include "../Interfaces.h"
 #include "../Memory.h"
-#include "../SDK/ConVar.h"
 #include "../SDK/Entity.h"
 #include "../SDK/UserCmd.h"
 #include "../SDK/Vector.h"
@@ -10,6 +9,7 @@
 #include "../SDK/GlobalVars.h"
 #include "../SDK/PhysicsSurfaceProps.h"
 #include "../SDK/WeaponData.h"
+#include "../SDK/EngineTrace.h"
 
 Vector Aimbot::calculateRelativeAngle(const Vector& source, const Vector& destination, const Vector& viewAngles) noexcept
 {
@@ -39,7 +39,8 @@ static float handleBulletPenetration(SurfaceData* enterSurfaceData, const Trace&
     if (enterSurfaceData->material == 71 || enterSurfaceData->material == 89) {
         damageModifier = 0.05f;
         penetrationModifier = 3.0f;
-    } else if (enterTrace.contents >> 3 & 1 || enterTrace.surface.flags >> 7 & 1) {
+    }
+    else if (enterTrace.contents >> 3 & 1 || enterTrace.surface.flags >> 7 & 1) {
         penetrationModifier = 1.0f;
     }
 
@@ -56,7 +57,24 @@ static float handleBulletPenetration(SurfaceData* enterSurfaceData, const Trace&
     return damage;
 }
 
-static bool canScan(Entity* localPlayer, Entity* entity, const Vector& destination, const WeaponData* weaponData, int minDamage) noexcept
+static bool handleTaserPenetration(UserCmd* cmd, Vector& angle, Vector& target) noexcept
+{
+    Vector end;
+    Trace enterTrace;
+    __asm {
+        mov ecx, end
+        mov edx, enterTrace
+    }
+
+    interfaces->engineTrace->traceRay({ localPlayer->getEyePosition(), target }, 0x46004009, { localPlayer.get() }, enterTrace);
+
+    if (sqrt(sqrt(enterTrace.startpos.x * enterTrace.startpos.y * enterTrace.startpos.z)) - sqrt(sqrt(target.x * target.y * target.z)) <= config->misc.autoZeusMaxPenDist)
+        return true;
+    else
+        return false;
+}
+
+static bool canScan(Entity* localPlayer, Entity* entity, const Vector& destination, const WeaponInfo* weaponData, int minDamage) noexcept
 {
     float damage{ static_cast<float>(weaponData->damage) };
 
@@ -92,6 +110,118 @@ static bool canScan(Entity* localPlayer, Entity* entity, const Vector& destinati
     return false;
 }
 
+void Aimbot::autoZeus(UserCmd* cmd) noexcept
+{
+    if (!localPlayer || !localPlayer->isAlive() || localPlayer->nextAttack() > memory->globalVars->serverTime())
+        return;
+
+    const auto activeWeapon = localPlayer->getActiveWeapon();
+    if (!activeWeapon || !activeWeapon->clip() || activeWeapon->nextPrimaryAttack() > memory->globalVars->serverTime())
+        return;
+
+    auto weaponIndex = getWeaponIndex(activeWeapon->itemDefinitionIndex2());
+    if (!weaponIndex)
+        return;
+
+    static auto lastTime = 0.0f;
+    static auto lastContact = 0.0f;
+
+    const auto now = memory->globalVars->realtime;
+
+    const auto weaponData = activeWeapon->getWeaponData();
+    if (!weaponData)
+        return;
+
+    if (activeWeapon->itemDefinitionIndex2() != WeaponId::Taser)
+        return;
+
+    Vector bestTarget{ };
+    auto localPlayerEyePosition = localPlayer->getEyePosition();
+
+    for (int i = 1; i <= interfaces->engine->getMaxClients(); i++) {
+        auto entity = interfaces->entityList->getEntity(i);
+        if (!entity || entity == localPlayer.get() || entity->isDormant() || !entity->isAlive() || !entity->isEnemy() || entity->gunGameImmunity())
+            continue;
+
+        auto boneList = std::initializer_list{ 3, 4 };
+
+        if (!config->misc.autoZeusBaimOnly)
+            boneList = std::initializer_list{ 3, 4, 5, 6, 7, 11, 28, 39, 53, 73, 74, 76, 82, 83 };
+        else
+            boneList = std::initializer_list{ 3, 4, 5 };
+
+        for (auto bone : boneList) {
+            auto bonePosition = entity->getBonePosition(bone);
+
+            auto angle = calculateRelativeAngle(localPlayerEyePosition, bonePosition, cmd->viewangles);
+            auto fov = std::hypotf(angle.x, angle.y);
+
+            Vector viewAngles{ std::cos(degreesToRadians(cmd->viewangles.x + angle.x)) * std::cos(degreesToRadians(cmd->viewangles.y + angle.y)) * weaponData->range,
+                std::cos(degreesToRadians(cmd->viewangles.x + angle.x)) * std::sin(degreesToRadians(cmd->viewangles.y + angle.y)) * weaponData->range,
+                -std::sin(degreesToRadians(cmd->viewangles.x + angle.x)) * weaponData->range };
+
+            if (!entity->isVisible(bonePosition) && !handleTaserPenetration(cmd, viewAngles, bonePosition))
+                continue;
+            else
+            {
+                Trace trace;
+
+                interfaces->engineTrace->traceRay({ localPlayer->getEyePosition(), localPlayer->getEyePosition() + viewAngles }, 0x46004009, localPlayer.get(), trace);
+                if (trace.entity && trace.entity->getClientClass()->classId == ClassId::CSPlayer && trace.entity->isEnemy() && !trace.entity->gunGameImmunity())
+                {
+                    float damage = (weaponData->damage * std::pow(weaponData->rangeModifier, trace.fraction * weaponData->range / 510.0f));
+
+                    if (damage >= (true ? trace.entity->health() : 100)) {
+                        bestTarget = bonePosition;
+                    }
+                }
+            }
+        }
+    }
+
+    if (bestTarget) {
+        static Vector lastAngles{ cmd->viewangles };
+        static int lastCommand{ };
+
+        if (lastCommand == cmd->commandNumber - 1 && lastAngles)
+            cmd->viewangles = lastAngles;
+
+        auto angle = calculateRelativeAngle(localPlayer->getEyePosition(), bestTarget, cmd->viewangles);
+        bool clamped{ false };
+
+        if (fabs(angle.x) > config->misc.maxAngleDelta || fabs(angle.y) > config->misc.maxAngleDelta) {
+            angle.x = std::clamp(angle.x, -config->misc.maxAngleDelta, config->misc.maxAngleDelta);
+            angle.y = std::clamp(angle.y, -config->misc.maxAngleDelta, config->misc.maxAngleDelta);
+            clamped = true;
+        }
+
+        cmd->viewangles += angle;
+
+        const Vector viewAngles{ std::cos(degreesToRadians(cmd->viewangles.x)) * std::cos(degreesToRadians(cmd->viewangles.y)) * weaponData->range,
+                 std::cos(degreesToRadians(cmd->viewangles.x)) * std::sin(degreesToRadians(cmd->viewangles.y)) * weaponData->range,
+                -std::sin(degreesToRadians(cmd->viewangles.x)) * weaponData->range };
+        Trace trace;
+        interfaces->engineTrace->traceRay({ localPlayer->getEyePosition(), localPlayer->getEyePosition() + viewAngles }, 0x46004009, localPlayer.get(), trace);
+        if (trace.entity && trace.entity->getClientClass()->classId == ClassId::CSPlayer && trace.entity->isEnemy() && !trace.entity->gunGameImmunity())
+        {
+            float damage = (weaponData->damage * std::pow(weaponData->rangeModifier, trace.fraction * weaponData->range / 500.0f));
+
+            if (damage >= (true ? trace.entity->health() : 100)) {
+                cmd->buttons |= UserCmd::IN_ATTACK;
+                lastContact = now;
+            }
+        }
+
+        if (clamped)
+            cmd->buttons &= ~UserCmd::IN_ATTACK;
+
+        if (clamped) lastAngles = cmd->viewangles;
+        else lastAngles = Vector{ };
+
+        lastCommand = cmd->commandNumber;
+    }
+}
+
 void Aimbot::run(UserCmd* cmd) noexcept
 {
     if (!localPlayer || localPlayer->nextAttack() > memory->globalVars->serverTime())
@@ -106,6 +236,10 @@ void Aimbot::run(UserCmd* cmd) noexcept
         return;
 
     auto weaponClass = getWeaponClass(activeWeapon->itemDefinitionIndex2());
+
+    if (activeWeapon->itemDefinitionIndex2() == WeaponId::Taser && config->misc.autoZeus)
+        Aimbot::autoZeus(cmd);
+
     if (!config->aimbot[weaponIndex].enabled)
         weaponIndex = weaponClass;
 
@@ -122,7 +256,8 @@ void Aimbot::run(UserCmd* cmd) noexcept
         if (!config->aimbot[weaponIndex].keyMode) {
             if (!GetAsyncKeyState(config->aimbot[weaponIndex].key))
                 return;
-        } else {
+        }
+        else {
             static bool toggle = true;
             if (GetAsyncKeyState(config->aimbot[weaponIndex].key) & 1)
                 toggle = !toggle;
@@ -156,6 +291,7 @@ void Aimbot::run(UserCmd* cmd) noexcept
                     continue;
 
                 auto angle = calculateRelativeAngle(localPlayerEyePosition, bonePosition, cmd->viewangles + aimPunch);
+
                 auto fov = std::hypotf(angle.x, angle.y);
                 if (fov < bestFov) {
                     bestFov = fov;
@@ -174,15 +310,17 @@ void Aimbot::run(UserCmd* cmd) noexcept
             if (lastCommand == cmd->commandNumber - 1 && lastAngles && config->aimbot[weaponIndex].silent)
                 cmd->viewangles = lastAngles;
 
+
             auto angle = calculateRelativeAngle(localPlayer->getEyePosition(), bestTarget, cmd->viewangles + aimPunch);
+
             bool clamped{ false };
 
             if (fabs(angle.x) > config->misc.maxAngleDelta || fabs(angle.y) > config->misc.maxAngleDelta) {
-                    angle.x = std::clamp(angle.x, -config->misc.maxAngleDelta, config->misc.maxAngleDelta);
-                    angle.y = std::clamp(angle.y, -config->misc.maxAngleDelta, config->misc.maxAngleDelta);
-                    clamped = true;
+                angle.x = std::clamp(angle.x, -config->misc.maxAngleDelta, config->misc.maxAngleDelta);
+                angle.y = std::clamp(angle.y, -config->misc.maxAngleDelta, config->misc.maxAngleDelta);
+                clamped = true;
             }
-            
+
             angle /= config->aimbot[weaponIndex].smooth;
             cmd->viewangles += angle;
             if (!config->aimbot[weaponIndex].silent)

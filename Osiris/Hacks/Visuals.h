@@ -1,23 +1,15 @@
 #pragma once
-
-#include <array>
-
-#include "../Config.h"
-#include "../Interfaces.h"
-#include "../Memory.h"
-#include "../SDK/ConVar.h"
-#include "../SDK/Entity.h"
-#include "../SDK/Engine.h"
-#include "../SDK/EntityList.h"
+#include "../SDK/Vector.h"
 
 enum class FrameStage;
 class GameEvent;
 
-namespace Visuals {
+namespace Visuals
+{
     void playerModel(FrameStage stage) noexcept;
     void colorWorld() noexcept;
     void modifySmoke() noexcept;
-    void thirdperson() noexcept;
+	void thirdperson(FrameStage stage, Vector angle) noexcept;
     void removeVisualRecoil(FrameStage stage) noexcept;
     void removeBlur() noexcept;
     void updateBrightness() noexcept;
@@ -34,4 +26,6 @@ namespace Visuals {
     bool removeSleeves(const char* modelName) noexcept;
     bool removeWeapons(const char* modelName) noexcept;
     void skybox() noexcept;
-};
+    void indicators() noexcept;
+	void bulletBeams(GameEvent* event = nullptr) noexcept;
+}

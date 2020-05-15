@@ -10,10 +10,13 @@
 class ClientMode;
 class Entity;
 class Input;
-class ItemSchema;
+class ItemSystem;
+class KeyValues;
 class MoveHelper;
 class MoveData;
 class ViewRender;
+class WeaponSystem;
+class IViewRenderBeams;
 
 struct GlobalVars;
 struct GlowObjectManager;
@@ -45,9 +48,9 @@ public:
     uintptr_t scopeLens;
     bool(__thiscall* isOtherEnemy)(Entity*, Entity*);
     uintptr_t hud;
-    int*(__thiscall* findHudElement)(uintptr_t, const char*);
+    int* (__thiscall* findHudElement)(uintptr_t, const char*);
     int(__thiscall* clearHudWeapon)(int*, int);
-    std::add_pointer_t<ItemSchema* __cdecl()> itemSchema;
+    std::add_pointer_t<ItemSystem* __cdecl()> itemSystem;
     void(__thiscall* setAbsOrigin)(Entity*, const Vector&);
     uintptr_t listLeaves;
     int* dispatchSound;
@@ -65,6 +68,12 @@ public:
     int* predictionRandomSeed;
     MoveData* moveData;
     MoveHelper* moveHelper;
+    std::uintptr_t keyValuesFromString;
+    KeyValues* (__thiscall* keyValuesFindKey)(KeyValues* keyValues, const char* keyName, bool create);
+    void(__thiscall* keyValuesSetString)(KeyValues* keyValues, const char* value);
+    WeaponSystem* weaponSystem;
+    IViewRenderBeams* renderBeams;
+
 private:
     static std::uintptr_t findPattern(const wchar_t* module, const char* pattern, size_t offset = 0) noexcept
     {
@@ -82,7 +91,8 @@ private:
                 if (*first == *second || *second == '?') {
                     ++first;
                     ++second;
-                } else {
+                }
+                else {
                     first = ++start;
                     second = pattern;
                 }
@@ -96,4 +106,4 @@ private:
     }
 };
 
-inline std::unique_ptr<Memory> memory;
+inline std::unique_ptr<const Memory> memory;
